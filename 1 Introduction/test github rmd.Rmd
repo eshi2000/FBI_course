@@ -15,3 +15,82 @@ health_full <- read_csv("https://chronicdata.cdc.gov/api/views/6vp6-wxuq/rows.cs
 pge_19_q1_elec <- read_csv("PGE_2019_Q1_ElectricUsageByZip.csv")
 ```
 
+```{r}
+library(tidyverse)
+year <- 2019
+quarters <- 1:4
+type <- "Electric"
+
+pge_19_elec <- NULL
+
+for(quarter in quarters) {
+  filename <- paste0(
+    "PGE_",
+    year,
+    "_Q",
+    quarter,
+    "_",
+    type,
+    "UsageByZip.csv"
+    )
+  print(filename)
+  temp = read_csv(filename)
+  pge_19_elec <- rbind(pge_19_elec,temp)
+  saveRDS(pge_19_elec, "pge_19_elec.rds")
+}
+
+```
+```{r}
+pge_filter <- 
+  filter(
+    pge_19_elec,
+    CUSTOMERCLASS %in% 
+      c(
+        "Elec- Residential",
+        "Elec- Commercial"
+      )
+  )
+names(pge_filter)
+```
+```{r}
+pge_final <-
+  pge_19_elec %>%
+  filter(
+    CUSTOMERCLASS %in% 
+      c(
+        "Elec- Residential",
+        "Elec- Commercial"
+      )
+  ) %>%
+  select(
+    -YEAR,
+    -COMBINED,
+    -AVERAGEKWH
+  ) %>%
+  group_by(
+    MONTH,
+    CUSTOMERCLASS
+  ) %>%
+  summarize(
+    TOTALKWH =
+      sum(
+        TOTALKWH,
+        na.rm = T
+      ),
+    TOTALCUSTOMERS = 
+      sum(
+        TOTALCUSTOMERS,
+        na.rm = T
+      )
+  ) %>%
+  mutate(
+    AVERAGEKWH = TOTALKWH/TOTALCUSTOMERS
+  )
+```
+```{r}
+i <- 3
+j <- 10
+k <- i*j
+```
+
+
