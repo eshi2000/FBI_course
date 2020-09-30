@@ -1,0 +1,139 @@
+---
+title: "microdata"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+```{r libraries}
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+library(tidyverse)
+library(tidycensus)
+
+census_api_key("c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
+```
+```{r load_data}
+temp <- tempfile()
+download.file("https://www2.census.gov/programs-surveys/acs/data/pums/2018/5-Year/csv_hca.zip",destfile = temp, mode = "wb")
+
+pums_hca_2018_5yr <- read_csv(unzip(temp,"psam_h06.csv"))
+
+unlink(temp)
+```
+```{r pums_add}
+pums_vars_2018 <- 
+  pums_variables %>%
+  filter(year == 2018, survey == "acs5")
+
+pums_vars_2018_distinct_hh <- 
+  pums_vars_2018 %>%
+  distinct(var_code, var_label, data_type, level) %>% 
+  filter(level == "housing")
+
+ca_pums <- get_pums(
+  variables = c(
+    "PUMA",
+    "NP",
+    "HHL",
+    "HINCP",
+    "TEN"
+  ),
+  state = "CA",
+  survey = "acs5",
+  recode = T
+)
+
+```
+```{r}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+bay_counties <- 
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+bay_pums <-
+  ca_pums %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+```
+```{r map}
+bay_pums_example <-
+  bay_pums %>% 
+  filter(!duplicated(SERIALNO)) %>% 
+  mutate(
+    nonenglish_renter_lowinc = ifelse(
+      (HHL_label != "English only") &
+        (TEN_label == "Rented") &
+        (HINCP < 100000),
+      WGTP,
+      0
+    )
+  ) %>% 
+  group_by(PUMA) %>% 
+  summarize(
+    perc_nonenglish_renter_lowinc =
+      sum(nonenglish_renter_lowinc, na.rm =T)/sum(WGTP, na.rm = T)*100
+  ) %>% 
+  left_join(
+    bay_pumas %>% 
+      select(PUMACE10),
+    by = c("PUMA" = "PUMACE10")
+  ) %>% 
+  st_as_sf()
+
+pums_pal <- colorNumeric(
+  palette = "Oranges",
+  domain = bay_pums_example$perc_nonenglish_renter_lowinc
+)
+
+leaflet() %>%
+  addTiles() %>% 
+  addPolygons(
+    data = bay_pums_example,
+    fillColor = ~pums_pal(perc_nonenglish_renter_lowinc),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(perc_nonenglish_renter_lowinc), 
+      "% non-English-speaking renter households making less than $100K"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = bay_pums_example,
+    pal = pums_pal,
+    values = ~perc_nonenglish_renter_lowinc,
+    title = "% non-English-speaking<br>renter households<br>making less than $100K"
+  )
+```
+
+

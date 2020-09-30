@@ -1,0 +1,343 @@
+---
+title: "equity_analysis"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+```{r libraries}
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+library(tidyverse)
+
+Sys.setenv(CENSUS_KEY="c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
+```
+```{r test_load_data}
+acs_vars_2018_5yr <-
+  listCensusMetadata(
+    name = "2018/acs/acs5",
+    type = "variables"
+  )
+
+bay_income_white <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "county:001,013,041,055,075,081,085,095,097", 
+    regionin = "state:06",
+    vars = "group(B19001A)"
+  ) %>%
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2018_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>%
+  separate(
+    label,
+    into = c(NA,NA,"income"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(income))
+
+get_census_test <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "county:001,013,041,055,075,081,085,095,097", 
+    regionin = "state:06",
+    vars = "group(B19001A)"
+  )
+```
+```{r}
+census_race_labels <- c(
+  "White Alone",
+  "Black or African American",
+  "American Indian and Alaska Native Alone",
+  "Asian Alone",
+  "Native Hawaiian and Other Pacific Islander Alone)",
+  "Some Other Race Alone",
+  "Two or More Races"
+)
+bay_income_race <-
+  1:7 %>%
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2018,
+      region = "county:001,013,041,055,075,081,085,095,097",
+      regionin = "state:06",
+      vars = paste0("group(B19001",LETTERS[x],")")
+    ) %>%
+      select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+      pivot_longer(
+        ends_with("E"),
+        names_to = "variable",
+        values_to = "estimate"
+      ) %>%
+      left_join(
+        acs_vars_2018_5yr %>% 
+          select(name, label), 
+        by = c("variable" = "name")
+      ) %>% 
+      select(-variable) %>% 
+      separate(
+        label,
+        into = c(NA,NA,"income"),
+        sep = "!!"
+      ) %>% 
+      filter(!is.na(income)) %>% 
+      mutate(race = census_race_labels[x])
+  })
+```
+```{r}
+bay_race_total <-
+  bay_income_race %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(income = "Total")
+
+bay_income_race %>%
+  group_by(income, race) %>%
+  summarize(estimate = sum(estimate)) %>%
+  rbind(bay_race_total) %>%
+  ggplot() + 
+  geom_bar(
+    aes(
+      x = income %>% factor(levels = rev(c("Total", bay_income_race$income[1:16]))),
+      y = estimate,
+      fill = race
+    ),
+     stat = "identity",
+    position = "fill"
+  ) + 
+  labs(
+    x = "Household income",
+    y = "Number of households",
+    title = "Bay Area household income by race",
+    fill = "Race of householder"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+```{r analysis}
+total_pop <- sum(bay_race_total$estimate)
+total_non_white_pop <- sum(bay_race_total$estimate[1:6])
+percent_non_white_pop <- (total_non_white_pop/total_pop * 100) %>% round()
+
+non_white_under_30k <- 
+  bay_income_race %>%
+  filter(income %in% bay_income_race$income[1:5]) %>%
+  filter(race != "White Alone") %>%
+  pull(estimate) %>%
+  sum()
+
+total_under_30k <-
+  bay_income_race %>%
+  filter(income %in% bay_income_race$income[1:5]) %>%
+  pull(estimate) %>%
+  sum()
+
+prob_non_white_under_30k = non_white_under_30k / total_non_white_pop
+prob_under_30k = total_under_30k / total_pop
+
+likelihood_greater_expected = 
+  (((prob_non_white_under_30k - prob_under_30k) 
+    / prob_under_30k) * 100) %>% round()
+
+```
+```{r}
+library(readxl)
+
+temp <- tempfile()
+download.file("https://oehha.ca.gov/media/downloads/calenviroscreen/document/ces3results.xlsx", destfile = temp, mode = "wb")
+
+ces3 <- read_excel(temp, sheet = "CES 3.0 (2018 Update)")
+
+
+unlink(temp)
+```
+```{r}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+ca_tracts <- tracts("CA", cb = T, progress_bar = F)
+
+ces3_bay_pm25 <-
+  ces3 %>% 
+  filter(`California County` %in% bay_county_names) %>% 
+  select(`Census Tract`, PM2.5) %>% 
+  filter(!is.na(PM2.5)) %>%
+  left_join(
+    ca_tracts %>% 
+      transmute(GEOID = as.numeric(GEOID)), 
+    by = c("Census Tract" = "GEOID")
+  ) %>% 
+  st_as_sf()
+
+pm25_pal <- colorNumeric(
+  palette = "Reds",
+  domain = ces3_bay_pm25$PM2.5
+)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = ces3_bay_pm25,
+    fillColor = ~pm25_pal(PM2.5),
+    color = "white",
+    weight = 0.5,
+    fillOpacity = 0.5,
+    label = ~PM2.5
+  )
+```
+```{r}
+census_race_labels <- 
+  c(
+    "White Alone",
+    "Black or African American",
+    "American Indian and Alaska Native Alone",
+    "Asian Alone",
+    "Native Hawaiian and Other Pacific Islander Alone)",
+    "Some Other Race Alone",
+    "Two or More Races"
+  )
+
+bay_race_tracts <-
+  1:7 %>%
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2018,
+      region = "tract:*",
+      regionin = "state:06+county:001,013,041,055,075,081,085,095,097",
+      vars = paste0("B19001",LETTERS[x],"_001E")
+    ) %>%
+    mutate(
+      tract = paste0(state, county, tract) %>% as.numeric(),
+      race = census_race_labels[x]
+    )  %>% 
+    select(
+      tract,
+      race,
+      estimate = paste0("B19001",LETTERS[x],"_001E")
+    )
+  })
+
+bay_pm25_race <-
+  bay_race_tracts %>% 
+  left_join(
+    ces3_bay_pm25 %>% 
+      st_set_geometry(NULL),
+    by = c("tract" = "Census Tract")
+  ) %>% 
+  mutate(
+    PM2.5_tier =
+      case_when(
+        PM2.5 < 5 ~ "4-5",
+        PM2.5 < 6 ~ "5-6",
+        PM2.5 < 7 ~ "6-7",
+        PM2.5 < 8 ~ "7-8",
+        PM2.5 < 9 ~ "8-9",
+        PM2.5 < 10 ~ "9-10",
+        TRUE ~ "10-11"
+      ) 
+  ) %>% 
+  group_by(race, PM2.5_tier) %>% 
+  summarize(estimate = sum(estimate, na.rm = T))
+```
+```{r}
+bay_pm25_race_stacked <-
+  bay_pm25_race %>% 
+  group_by(PM2.5_tier, race) %>% 
+  summarize(estimate = sum(estimate)) %>%
+  rbind(
+    bay_pm25_race %>%
+      group_by(race) %>%
+      summarize(estimate = sum(estimate)) %>%
+      mutate(PM2.5_tier = "Total")
+  ) %>%
+  ggplot() +
+  geom_bar(
+    aes(
+      x = PM2.5_tier %>% factor(levels = rev(c("Total","4-5","5-6","6-7","7-8","8-9","9-10","10-11"))),
+      y = estimate,
+      fill = race
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "PM2.5",
+    y = "Number of households",
+    title = "Bay Area PM2.5 exposure by race",
+    subtitle = "Annual mean concentration of PM2.5 (average of quarterly means, µg/m3),\nover three years (2012 to 2014), aggregated by Census tract",
+    fill = "Race of householder"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+
+bay_pm25_race_fill <-
+  bay_pm25_race %>%
+  group_by(PM2.5_tier, race) %>%
+  summarize(estimate = sum(estimate)) %>%
+  rbind(
+    bay_pm25_race %>%
+      group_by(race) %>%
+      summarize(estimate = sum(estimate)) %>%
+      mutate(PM2.5_tier = "Total")
+  ) %>%
+  ggplot() +
+  geom_bar(
+    aes(
+      x = PM2.5_tier %>% factor(levels = rev(c("Total","4-5","5-6","6-7","7-8","8-9","9-10","10-11"))),
+      y = estimate,
+      fill = race
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "PM2.5",
+    y = "Proportion of households",
+    title = "Bay Area PM2.5 exposure by race",
+    subtitle = "Annual mean concentration of PM2.5 (average of quarterly means, µg/m3),\nover three years (2012 to 2014), aggregated by Census tract",
+    fill = "Race of householder"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+
+bay_pm25_race_stacked
+```
+
+
+

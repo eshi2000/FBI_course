@@ -1,0 +1,174 @@
+---
+title: "migration"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+```{r libraries}
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+library(tidyverse)
+
+Sys.setenv(CENSUS_KEY="c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
+acs_vars_2019_1yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs1",
+    type = "variables"
+  )
+```
+```{r load_data}
+smc_mobility_current_19 <- 
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2019,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07010)")
+  ) %>% 
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"mobility","temp","income"),
+    sep = "!!"
+  )  %>%
+  mutate(
+    income = ifelse(
+      temp == "No income",
+      temp,
+      income
+    ),
+    mobility = ifelse(
+      mobility %in% c("Same house 1 year ago:", "Moved within same county:"),
+      "Here since last year",
+      "Inflow"
+    )
+  ) %>% 
+  filter(!is.na(income)) %>% 
+  group_by(mobility, income) %>%
+  summarize(estimate = sum(estimate))
+
+smc_mobility_lastyear_19 <- 
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2019,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07410)")
+  ) %>% 
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"mobility","temp","income"),
+    sep = "!!"
+  ) %>% 
+  mutate(
+    income = ifelse(
+      temp == "No income",
+      temp,
+      income
+    ),
+    mobility = ifelse(
+      mobility %in% c("Same house:", "Moved within same county:"),
+      "Here since last year",
+      "Outflow"
+    )
+  ) %>% 
+  filter(!is.na(income)) %>% 
+  group_by(mobility, income) %>% 
+  summarize(estimate = sum(estimate))
+
+smc_mobility_current_18 <-
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2018,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07010)")
+  ) %>%
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"mobility","temp","income"),
+    sep = "!!"
+  ) %>% 
+  mutate(
+    income = ifelse(
+      temp == "No income",
+      temp,
+      income
+    ),
+    mobility = "Here last year"
+  ) %>% 
+  filter(!is.na(income)) %>% 
+  group_by(mobility, income) %>% 
+  summarize(estimate = sum(estimate))
+```
+```{r combine_data}
+smc_flows_19 <-
+  rbind(
+    smc_mobility_current_18,
+    smc_mobility_lastyear_19 %>% 
+      filter(mobility == "Outflow"),
+    smc_mobility_current_19 %>% 
+      filter(mobility == "Inflow"),
+    smc_mobility_current_19 %>% 
+      group_by(income) %>% 
+      summarize(estimate = sum(estimate)) %>% 
+      mutate(mobility = "Here this year")
+  )  %>% 
+  pivot_wider(
+    names_from = mobility,
+    values_from = estimate
+  ) %>%
+  mutate(
+    `External net` = Inflow - Outflow,
+    `Internal net` = `Here this year` - `Here last year` - `External net`
+  )  %>% 
+  select(
+    `Income tier` = income, 
+    `Internal net`,
+    `External net`,
+    `Here last year`, 
+    `Here this year`, 
+    Outflow, 
+    Inflow
+  )
+```
+
+
