@@ -1,0 +1,251 @@
+---
+title: "sampling bias"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+```{r}
+library(censusapi)
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(tigris)
+library(leaflet)
+Sys.setenv(CENSUS_KEY="c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
+
+acs_vars_2018_5yr <-
+  listCensusMetadata(
+    name = "2018/acs/acs5",
+    type = "variables"
+  )
+home_panel_summary <- read_csv("home_panel_summary.gz")
+```
+```{r}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_cbgs <- 
+  block_groups("CA", bay_county_names, cb = T, progress_bar = F) %>% 
+  filter(COUNTYFP %in% bay_counties$COUNTYFP)
+
+bay_area_devices <-
+  home_panel_summary %>% 
+  filter(census_block_group %in% bay_cbgs$GEOID) %>% 
+  select(
+    census_block_group,
+    number_devices_residing
+  )
+```
+```{r}
+bay_cbg_pop <-
+  bay_counties$COUNTYFP %>% 
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2018,
+      region = "block group:*",
+      regionin = paste0("state:06+county:",x),
+      vars = "B01001_001E"
+    )
+  }) %>%
+  transmute(
+    census_block_group =
+      paste0(state,county,tract,block_group),
+    pop = B01001_001E
+  ) %>%
+  right_join(bay_area_devices) %>%
+  mutate(
+    coverage = number_devices_residing / pop,
+    scale_factor = pop / number_devices_residing
+  ) %>%
+  left_join(
+    bay_cbgs %>% select(GEOID),
+    by = c("census_block_group" = "GEOID")
+  ) %>%
+  st_as_sf()
+```
+```{r}
+bay_cbg_pop %>% 
+  ggplot(
+    aes(
+      x = pop,
+      y = number_devices_residing
+    )
+  ) +
+  geom_point()
+
+outlier_cbg <-
+  bay_cbg_pop %>% 
+  arrange(desc(number_devices_residing)) %>% 
+  .[1,]
+
+outlier_cbg %>% 
+  leaflet() %>% 
+  addTiles() %>% 
+  addPolygons()
+```
+```{r}
+bay_cbg_pop %>% 
+  ggplot(
+    aes(
+      x = pop,
+      y = scale_factor
+    )
+  ) +
+  geom_point()
+
+outlier_cbg <-
+  bay_cbg_pop %>% 
+  arrange(desc(scale_factor)) %>% 
+  .[1,]
+outlier_cbg %>% 
+  leaflet() %>% 
+  addTiles() %>% 
+  addPolygons()
+```
+```{r}
+bay_cbg_pop %>% 
+  ggplot(
+    aes(
+      x = pop,
+      y = coverage
+    )
+  ) +
+  geom_point()
+```
+```{r}
+outliers <- 
+  bay_cbg_pop %>% 
+  filter(scale_factor %in% boxplot.stats(scale_factor)$out)
+
+outliers_pal <- colorQuantile(
+  palette = "RdYlGn",
+  domain = outliers$scale_factor,
+  n = 10
+)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = outliers,
+    color = ~outliers_pal(scale_factor),
+    label = ~scale_factor
+  )
+```
+```{r}
+bay_cbg_pop_clean <-
+  bay_cbg_pop %>% 
+  arrange(desc(scale_factor))%>% 
+  .[-1, ] %>% 
+  arrange(desc(number_devices_residing)) %>% 
+  .[-1, ] %>% 
+  filter(scale_factor > 0) %>% 
+  filter(coverage < 1)
+
+bay_cbg_pop_clean %>% 
+  ggplot(
+    aes(
+      x = pop,
+      y = number_devices_residing
+    )
+  ) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+```{r}
+bay_cbg_elderly <-
+  bay_counties$COUNTYFP %>% 
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2018,
+      region = "block group:*",
+      regionin = paste0("state:06+county:",x),
+      vars = "group(B01001)"
+    )
+  }) %>% 
+  mutate(
+    cbg =
+      paste0(state,county,tract,block_group)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,block_group,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2018_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"sex","age"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(age)) %>% 
+  mutate(
+    elderly = 
+      ifelse(
+        age %in% c(
+          "65 and 66 years",
+          "67 to 69 years",
+          "70 to 74 years",
+          "75 to 79 years",
+          "80 to 84 years",
+          "85 years and over"
+        ),
+        estimate,
+        NA
+      )
+  ) %>% 
+  group_by(cbg) %>% 
+  summarize(
+    elderly = sum(elderly, na.rm = T),
+    total_pop = sum(estimate, na.rm = T)
+  ) %>% 
+  mutate(
+    percent_elderly = elderly/total_pop
+  ) %>% 
+  filter(!is.na(percent_elderly))
+
+bay_cbg_elderly_join <-
+  bay_cbg_pop_clean %>% 
+  left_join(
+    bay_cbg_elderly,
+    by = c("census_block_group" = "cbg")
+  )
+
+bay_cbg_elderly_join %>% 
+  ggplot(
+    aes(
+      x = percent_elderly,
+      y = coverage
+    )
+  ) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+```{r}
+model <- lm(coverage ~ percent_elderly, bay_cbg_elderly_join)
+
+summary(model)
+```
+

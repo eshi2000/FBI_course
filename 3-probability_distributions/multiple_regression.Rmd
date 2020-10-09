@@ -1,0 +1,107 @@
+---
+title: "multiple regression"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+```{r}
+library(censusapi)
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(tigris)
+library(leaflet)
+library(corrplot)
+Sys.setenv(CENSUS_KEY="c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
+
+acs_vars_2018_5yr <-
+  listCensusMetadata(
+    name = "2018/acs/acs5",
+    type = "variables"
+  )
+```
+```{r}
+bay_multiple_tract <- 
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "tract:*",
+    regionin = "state:06+county:001,013,041,055,075,081,085,095,097",
+    vars = c(
+      "B19001A_001E",
+      "B19001_001E",
+      "B19001_014E",
+      "B19001_015E",
+      "B19001_016E",
+      "B19001_017E",
+      "B15003_001E",
+      "B15003_021E",
+      "B15003_022E",
+      "B15003_023E",
+      "B15003_024E",
+      "B15003_025E"
+    )
+  ) %>% 
+  transmute(
+    tract = paste0(state, county, tract),
+    perc_white = B19001A_001E / B19001_001E,
+    perc_over100k = (B19001_014E + B19001_015E + B19001_016E + B19001_017E) / B19001_001E,
+    perc_collegedegree = (B15003_021E + B15003_022E + B15003_023E + B15003_024E +B15003_025E) / B15003_001E
+  ) %>% 
+  filter(
+    !is.na(perc_white), 
+    !is.na(perc_over100k),
+    !is.na(perc_collegedegree)
+  )
+```
+```{r}
+correlationplot <- bay_multiple_tract %>% 
+  select(
+    perc_white, 
+    perc_collegedegree,
+    perc_over100k
+  ) %>% 
+  cor()
+
+corrplot(
+  correlationplot, 
+  method = "number",
+  type = "upper"
+)
+```
+```{r}
+ggplot(
+  data = bay_multiple_tract,
+  aes(
+    x = perc_collegedegree,
+    y = perc_over100k
+  )
+) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+model <- lm(perc_over100k ~ perc_collegedegree, bay_multiple_tract)
+
+summary(model)
+
+ggplot(
+  data = bay_multiple_tract,
+  aes(
+    x = perc_white,
+    y = perc_over100k
+  )
+) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+model <- lm(perc_over100k ~ perc_white, bay_multiple_tract)
+
+summary(model)
+```
+```{r}
+model <- lm(perc_over100k ~ perc_white + perc_collegedegree, bay_multiple_tract)
+
+summary(model)
+```
+

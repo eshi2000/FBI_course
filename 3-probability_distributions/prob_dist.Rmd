@@ -1,0 +1,54 @@
+---
+title: "prob_distr"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+```{r}
+library(tidyverse)
+
+# start <- proc.time()
+# sample <- runif(10000000)
+# time <- proc.time() - start
+# 
+# time[3]
+# hist(sample)
+```
+```{r galton}
+sample <- 1000000
+rounds <- 20
+
+galton <-
+  rounds %>% 
+  rerun(
+    sample(
+      c(-0.5, 0.5), 
+      size = sample, 
+      replace = T, 
+      prob = c(0.5, 0.5)
+    )
+  ) %>% 
+  reduce(rbind) %>% 
+  colSums()
+
+```
+```{r normal}
+normal_test <-
+  rnorm(sample, sd = sqrt(5))
+
+ggplot() +
+  geom_histogram(
+    aes(galton),
+    binwidth = 1
+  ) +
+  geom_density(
+    aes(
+      normal_test,
+      after_stat(count)
+    )
+  )
+```
+
+
