@@ -1,0 +1,255 @@
+---
+title: "difference-in-difference"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+```{r}
+library(tigris)
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(leaflet)
+library(StatMatch)
+
+Sys.setenv(CENSUS_KEY = "c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+census_api_key("c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+```
+```{r}
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = bay_pumas,
+    weight = 1,
+    color = "gray"
+  ) %>% 
+  addMarkers(
+    lng = -121.9415017,
+    lat = 37.502171
+  ) %>% 
+  addPolygons(
+    data = bay_pumas %>% 
+      filter(PUMACE10 == "08504")
+  )
+```
+```{r}
+pums_vars_2017 <- 
+  pums_variables %>%
+  filter(year == 2017, survey == "acs1")
+
+pums_transit <- 
+  2015:2017 %>% 
+  map_dfr(function(year){
+    get_pums(
+      variables = c(
+        "PUMA",
+        "JWTR"
+      ),
+      state = "CA",
+      year = year,
+      survey = "acs1",
+      recode = F
+    ) %>% 
+      mutate(
+        bart = ifelse(
+          JWTR %in% c("4","04"),
+          PWGTP,
+          0
+        ),
+        PUMA = PUMA %>% str_pad(5,"left","0")
+      ) %>% 
+      group_by(PUMA) %>% 
+      summarize(
+        pop = sum(PWGTP),
+        bart = sum(bart),
+        year = year
+      )
+  })
+```
+```{r}
+pums_pal <- colorNumeric(
+  palette = "YlOrRd",
+  domain = pums_transit$pop
+)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = pums_transit %>% 
+      right_join(bay_pumas %>% select(PUMA = PUMACE10)) %>% 
+      st_as_sf(),
+    fillColor = ~pums_pal(pop),
+    color = "white",
+    weight = 1,
+    label = ~paste0(PUMA,": Population ", pop)
+  )
+```
+```{r}
+pums_pal <- colorNumeric(
+  palette = "GnBu",
+  domain = pums_transit$bart
+)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = pums_transit %>% 
+      right_join(bay_pumas %>% select(PUMA = PUMACE10)) %>% 
+      st_as_sf(),
+    fillColor = ~pums_pal(bart),
+    color = "white",
+    weight = 1,
+    label = ~paste0(PUMA,": ", bart, " BART commute riders")
+  )
+```
+```{r}
+pums_transit_clean <-
+  pums_transit %>% 
+  select(-pop) %>% 
+  pivot_wider(
+    names_from = year,
+    values_from = bart
+  ) %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+```
+```{r}
+obs_matrix <-
+  pums_transit_clean %>% 
+  select(`2015`,`2016`) %>% 
+  as.matrix()
+
+dist_matrix <- mahalanobis.dist(obs_matrix)
+
+rownames(dist_matrix) <- pums_transit_clean$PUMA
+colnames(dist_matrix) <- pums_transit_clean$PUMA
+
+
+match <- dist_matrix["08504",] %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  rename(
+    PUMA = rowname,
+    match = "."
+  ) %>% 
+  right_join(
+    pums_transit_clean
+  ) %>% 
+  arrange(match) %>% 
+  .[1:11, ] %>% 
+  left_join(bay_pumas %>% select(PUMA = PUMACE10)) %>% 
+  st_as_sf()
+```
+
+```{r}
+leaflet() %>% 
+  addTiles() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = match[1, ],
+    color = "red",
+    label = ~PUMA
+  ) %>% 
+  addPolygons(
+    data = match[-1, ],
+    label = ~PUMA
+  )
+```
+```{r}
+match_pumas <-
+  match[-1,] %>% 
+  st_set_geometry(NULL) %>% 
+  select(-match) %>% 
+  pivot_longer(
+    -PUMA,
+    names_to = "year",
+    values_to = "bart"
+  ) %>%
+  group_by(
+    year
+  ) %>%
+  summarize(
+    bart = mean(bart),
+    PUMA = "Similar PUMAs"
+  )
+
+treatment_puma <-
+  match[1,] %>% 
+  select(-match) %>% 
+  st_set_geometry(NULL) %>% 
+  pivot_longer(
+    -PUMA,
+    names_to = "year",
+    values_to = "bart"
+  )
+```
+```{r}
+rbind(
+  treatment_puma,
+  match_pumas
+) %>% 
+  mutate(
+    year = year %>% paste0(.,"-01-01") %>%  as.Date()
+  ) %>% 
+  ggplot(
+    aes(
+      x = year,
+      y = bart,
+      color = PUMA
+    )
+  ) +
+  geom_line() +
+  geom_vline(xintercept = 2017, linetype = "dashed") +
+  labs(
+    title = "Milpitas vs. control neighborhoods, BART ridership",
+    x = "Year",
+    y = "BART commute riders"
+  )
+```
+```{r}
+pm_did <-
+  match %>% 
+  select(-match) %>% 
+  pivot_longer(
+    -`ZIP Code`,
+    names_to = "year",
+    values_to = "PM2.5"
+  ) %>% 
+  mutate(
+    year = year %>% as.numeric(),
+    time = ifelse(year == 2017, 1, 0),
+    treated = ifelse(PUMA == "08504", 1, 0)
+  )
+
+did_reg <- lm(bart ~ treated*time, data = transit_did)
+summary(did_reg)
+```
+

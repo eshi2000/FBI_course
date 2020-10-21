@@ -13,7 +13,7 @@ library(sf)
 library(tigris)
 library(leaflet)
 library(corrplot)
-Sys.setenv(CENSUS_KEY="c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
+Sys.setenv(CENSUS_KEY = "c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
 
 acs_vars_2018_5yr <-
   listCensusMetadata(
@@ -47,7 +47,7 @@ bay_multiple_tract <-
     tract = paste0(state, county, tract),
     perc_white = B19001A_001E / B19001_001E,
     perc_over100k = (B19001_014E + B19001_015E + B19001_016E + B19001_017E) / B19001_001E,
-    perc_collegedegree = (B15003_021E + B15003_022E + B15003_023E + B15003_024E +B15003_025E) / B15003_001E
+    perc_collegedegree = (B15003_021E + B15003_022E + B15003_023E + B15003_024E + B15003_025E) / B15003_001E
   ) %>% 
   filter(
     !is.na(perc_white), 

@@ -12,7 +12,7 @@ library(tidycensus)
 library(sf)
 library(tigris)
 library(leaflet)
-Sys.setenv(CENSUS_KEY="c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
+Sys.setenv(CENSUS_KEY = "c92c3c586ec2640e86f9d2e8d8b09b5a75f4ea16")
 
 acs_vars_2018_5yr <-
   listCensusMetadata(
@@ -36,7 +36,7 @@ bay_income_race_tract <-
       "B19001_017E"
     )
   ) %>% 
-  transmute (
+  transmute(
     tract = paste0(state, county, tract),
     perc_white = B19001A_001E / B19001_001E,
     perc_over100k = (B19001_014E + B19001_015E + 
@@ -194,7 +194,7 @@ ggplot(
       y = HINCP
     )
 ) +
-  geom_point()+
+  geom_point() +
   geom_smooth(method = "lm", se = F)
 ```
 

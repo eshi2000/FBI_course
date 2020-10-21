@@ -1,0 +1,142 @@
+---
+title: "logistic regression"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+```{r}
+library(tigris)
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(leaflet)
+library(StatMatch)
+
+census_api_key("c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+```
+```{r}
+pums_vars_2018 <- 
+  pums_variables %>%
+  filter(year == 2018, survey == "acs5")
+
+ca_pums <- get_pums(
+  variables = c(
+    "PUMA",
+    "AGEP",
+    "RAC1P",
+    "HISP",
+    "LANX"
+  ),
+  state = "CA",
+  year = 2018,
+  survey = "acs5",
+  recode = T
+)
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+bay_pums <-
+  ca_pums %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+```
+```{r}
+bay_pums_language <-
+  bay_pums %>% 
+  mutate(
+    white = ifelse(
+      RAC1P_label == "White alone",
+      1,
+      0
+    ),
+    hispanic = ifelse(
+      is.na(HISP_label %>% as.character()),
+      0,
+      1
+    ),
+    english = ifelse(
+      LANX_label == "No, speaks only English",
+      1,
+      0
+    )
+  )
+```
+```{r}
+logit_model <- glm(
+  english ~ AGEP + white + hispanic,
+  family = binomial(),
+  data = bay_pums_language,
+  weights = PWGTP
+)
+
+summary(logit_model)
+exp(coef(logit_model))
+predict(logit_model, data.frame(AGEP = 40, white = 1, hispanic = 0), type = "response")
+```
+
+```{r}
+sample <- sample(
+  c(TRUE, FALSE), 
+  nrow(bay_pums_language), 
+  replace = T, 
+  prob = c(0.8,0.2)
+)
+
+train <- bay_pums_language[sample, ]
+test <- bay_pums_language[!sample, ]
+
+logit_model_training <- glm(
+  english ~ AGEP + white + hispanic,
+  family = binomial(),
+  data = train,
+  weights = PWGTP
+)
+
+summary(logit_model_training)
+```
+```{r}
+test_predicted <-
+  predict(logit_model_training, newdata = test, type = "response")
+
+summary_2x2 <-
+  test %>% 
+  mutate(
+    english = ifelse(
+      english == 1, 
+      "Yes (English)", 
+      "No (ESL)"
+    )
+  ) %>% 
+  pull(english) %>% 
+  table(test_predicted > 0.5)
+
+summary_2x2
+```
+
+
