@@ -235,13 +235,14 @@ rbind(
   )
 ```
 ```{r}
-pm_did <-
+transit_did <-
   match %>% 
+  st_set_geometry(NULL) %>% 
   select(-match) %>% 
   pivot_longer(
-    -`ZIP Code`,
+    -PUMA,
     names_to = "year",
-    values_to = "PM2.5"
+    values_to = "bart"
   ) %>% 
   mutate(
     year = year %>% as.numeric(),
